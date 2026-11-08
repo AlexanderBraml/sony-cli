@@ -7,7 +7,8 @@ Sony protocol "v2" over an RFCOMM channel that is opened through BlueZ's
 Profile API, exactly like BudsLink does it.
 
 Usage:
-    linkbuds.py [toggle|nc|ambient|off|status] [--mac AA:BB:CC:DD:EE:FF] [-v]
+    linkbuds.py {toggle|nc|ambient|off|status} [--mac AA:BB:CC:DD:EE:FF] [-v]
+    linkbuds.py            (no arguments: print help)
 
 Requires: Python 3, PyGObject (python3-gi), BlueZ, buds paired + connected.
 The BudsLink app must not be running (it holds the same RFCOMM service).
@@ -413,11 +414,16 @@ def set_state(link, asm, mode, st):
 def main():
     global VERBOSE
     ap = argparse.ArgumentParser(description="Toggle Sony LinkBuds S noise cancelling / ambient sound.")
-    ap.add_argument("action", nargs="?", default="toggle",
-                    choices=["toggle", "nc", "ambient", "off", "status"])
+    ap.add_argument("action", nargs="?",
+                    choices=["toggle", "nc", "ambient", "off", "status"],
+                    help="toggle: Noise Cancelling <-> Ambient Sound (Off -> NC); "
+                         "nc / ambient / off: set that mode; status: print current mode")
     ap.add_argument("--mac", help="Bluetooth address of the buds (default: auto-detect)")
     ap.add_argument("-v", "--verbose", action="store_true", help="dump frames to stderr")
     args = ap.parse_args()
+    if args.action is None:
+        ap.print_help()
+        return
     VERBOSE = args.verbose
 
     bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)

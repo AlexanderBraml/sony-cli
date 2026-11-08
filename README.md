@@ -14,7 +14,8 @@ Ambient Sound mode from the command line. The protocol was taken from
 ## Usage
 
 ```
-./linkbuds.py            # toggle: Noise Cancelling <-> Ambient Sound (Off -> NC)
+./linkbuds.py            # print help
+./linkbuds.py toggle     # Noise Cancelling <-> Ambient Sound (Off -> NC)
 ./linkbuds.py nc         # Noise Cancelling
 ./linkbuds.py ambient    # Ambient Sound
 ./linkbuds.py off        # both off
