@@ -1,17 +1,19 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Switch a Sony LinkBuds S between Noise Cancelling and Ambient Sound mode.
+"""Switch Sony headphones between Noise Cancelling and Ambient Sound mode.
 
 Protocol extracted from BudsLink (src/lib/devices/sony/sonySocketBase.js,
-sonySocketV2.js, sonyConfig.js, profileManager.js). The LinkBuds S speaks
-Sony protocol "v2" over an RFCOMM channel that is opened through BlueZ's
-Profile API, exactly like BudsLink does it.
+sonySocketV2.js, sonyConfig.js, profileManager.js). Works with Sony devices
+that speak Sony protocol "v2" (e.g. LinkBuds S, WF-1000XM4/XM5, WH-1000XM5)
+over an RFCOMM channel that is opened through BlueZ's Profile API, exactly
+like BudsLink does it. Which NC / ambient features exist is queried from the
+device itself. Mainly tested on the LinkBuds S.
 
 Usage:
     sony-cli.py {toggle|nc|ambient|off|status} [--mac AA:BB:CC:DD:EE:FF] [-v]
     sony-cli.py            (no arguments: print help)
 
-Requires: Python 3, PyGObject (python3-gi), BlueZ, buds paired + connected.
+Requires: Python 3, PyGObject (python3-gi), BlueZ, device paired + connected.
 The BudsLink app must not be running (it holds the same RFCOMM service).
 """
 
@@ -28,8 +30,8 @@ except ImportError:
 
 # --- Constants (sonyDevice.js / sonyConfig.js) -------------------------------
 
+SONY_UUID_V1 = "96cc203e-5068-46ad-b32d-e316f5e069ba"   # older protocol, not supported
 SONY_UUID_V2 = "956c7b26-d49a-4ba8-b03f-b17d393cb6e2"
-NAME_PATTERN = "LinkBuds S"
 PROFILE_PATH = "/io/github/sonycli/profile"
 
 HEADER, TRAILER, ESCAPE, ESCAPE_MASK = 0x3E, 0x3C, 0x3D, 0xEF
@@ -109,28 +111,38 @@ def find_device(bus, mac):
                           Gio.DBusCallFlags.NONE, -1, None)
     objects = reply.unpack()[0]
 
-    candidates = []
+    candidates = []   # devices speaking Sony protocol v2
+    v1_only = []      # Sony devices that only speak the older v1 protocol
     for path, ifaces in objects.items():
         dev = ifaces.get("org.bluez.Device1")
         if not dev:
             continue
         address = dev.get("Address", "")
-        name = dev.get("Name") or dev.get("Alias") or ""
+        name = dev.get("Name") or dev.get("Alias") or address
         uuids = [u.lower() for u in dev.get("UUIDs", [])]
-        if mac:
-            if address.upper() == mac.upper():
-                candidates = [(path, name, dev)]
-                break
-        elif SONY_UUID_V2 in uuids and NAME_PATTERN in name:
+        if mac and address.upper() != mac.upper():
+            continue
+        if SONY_UUID_V2 in uuids:
             candidates.append((path, name, dev))
+        elif SONY_UUID_V1 in uuids:
+            v1_only.append(name)
+        elif mac:
+            raise SonyError(f"'{name}' ({address}) does not offer the Sony v2 "
+                            "control service - not a supported Sony device")
 
     if not candidates:
-        what = mac if mac else f"a paired '{NAME_PATTERN}'"
+        if v1_only:
+            raise SonyError(f"'{v1_only[0]}' only speaks the older Sony v1 protocol, "
+                            "which is not supported")
+        what = mac if mac else "a paired Sony device"
         raise SonyError(f"could not find {what} in BlueZ")
 
     connected = [c for c in candidates if c[2].get("Connected")]
     if not connected:
         raise SonyError(f"'{candidates[0][1]}' is paired but not connected")
+    if len(connected) > 1:
+        names = ", ".join(f"{n} ({d.get('Address', '?')})" for _, n, d in connected)
+        raise SonyError(f"several Sony devices are connected: {names} - pick one with --mac")
 
     path, name, dev = connected[0]
     log(f"using device {name} ({path})")
@@ -572,13 +584,15 @@ def print_status(name, address, lines):
 
 def main():
     global VERBOSE
-    ap = argparse.ArgumentParser(description="Toggle Sony LinkBuds S noise cancelling / ambient sound.")
+    ap = argparse.ArgumentParser(description="Toggle noise cancelling / ambient sound on Sony headphones.")
     ap.add_argument("action", nargs="?",
                     choices=["toggle", "nc", "ambient", "off", "status"],
-                    help="toggle: Noise Cancelling <-> Ambient Sound (Off -> NC); "
+                    help="toggle: Noise Cancelling <-> Ambient Sound (Off -> NC; "
+                         "Ambient <-> Off on devices without NC); "
                          "nc / ambient / off: set that mode; status: show battery, "
                          "mode and settings")
-    ap.add_argument("--mac", help="Bluetooth address of the buds (default: auto-detect)")
+    ap.add_argument("--mac", help="Bluetooth address of the device "
+                                  "(default: auto-detect the connected Sony device)")
     ap.add_argument("-v", "--verbose", action="store_true", help="dump frames to stderr")
     args = ap.parse_args()
     if args.action is None:
@@ -599,12 +613,16 @@ def main():
             print_status(name, address, collect_status(link, asm, funcs, st))
             return
 
+        has_nc = asm not in (ASM_SEAMLESS, ASM_ON_OFF)
         if args.action == "toggle":
-            target = NC if st["mode"] == AMBIENT else AMBIENT
+            if has_nc:
+                target = AMBIENT if st["mode"] == NC else NC
+            else:
+                target = OFF if st["mode"] == AMBIENT else AMBIENT
         else:
             target = {"nc": NC, "ambient": AMBIENT, "off": OFF}[args.action]
 
-        if target == NC and asm in (ASM_SEAMLESS, ASM_ON_OFF):
+        if target == NC and not has_nc:
             raise SonyError("this device has no noise cancelling")
 
         if target != st["mode"]:
