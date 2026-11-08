@@ -61,6 +61,22 @@ between Ambient Sound and Off.
 Focus-on-voice and the ambient level are kept as currently set on the device.
 Bind `/path/to/sony-cli.py toggle` to a keyboard shortcut for one-key switching.
 
+### Toggle and pause music
+
+[`examples/sony-toggle-pause.sh`](examples/sony-toggle-pause.sh) toggles the
+mode and, with the `pause` argument, pauses the music when switching to Ambient
+Sound and resumes it when switching back to Noise Cancelling (via
+[playerctl](https://github.com/altdesktop/playerctl)):
+
+```
+examples/sony-toggle-pause.sh          # only toggle, like `sony-cli toggle`
+examples/sony-toggle-pause.sh pause    # toggle and pause / resume the music
+PLAYER=vlc examples/sony-toggle-pause.sh pause   # control another player (default: spotify)
+```
+
+It uses `sony-cli` from your `PATH` if installed, otherwise `sony-cli.py` from
+this repository. Handy as a keyboard shortcut for talking to someone.
+
 ## License
 
 GPL-3.0-or-later (see `LICENSE`), as the protocol implementation is derived
