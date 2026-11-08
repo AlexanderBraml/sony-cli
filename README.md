@@ -28,6 +28,19 @@ supported; the script tells you if it finds one.
 - `/usr/bin/python3` with PyGObject (`sudo apt install python3-gi` on Debian/Ubuntu/Mint)
 - BudsLink (or any other app that talks to the device's Sony service) must **not** be running
 
+## Installation
+
+`sony-cli.py` is a single standalone script with no dependencies beyond the
+requirements above. You can run it straight from the repository, or copy it into
+a `bin` directory on your `PATH` to call it from anywhere:
+
+```
+install -Dm755 sony-cli.py ~/.local/bin/sony-cli   # just for you
+sudo install -m755 sony-cli.py /usr/local/bin/sony-cli   # system-wide
+```
+
+Make sure `~/.local/bin` is on your `PATH`. Then run e.g. `sony-cli toggle`.
+
 ## Usage
 
 ```
