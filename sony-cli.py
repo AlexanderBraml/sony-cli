@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Switch a Sony LinkBuds S between Noise Cancelling and Ambient Sound mode.
 
 Protocol extracted from BudsLink (src/lib/devices/sony/sonySocketBase.js,
@@ -7,8 +8,8 @@ Sony protocol "v2" over an RFCOMM channel that is opened through BlueZ's
 Profile API, exactly like BudsLink does it.
 
 Usage:
-    linkbuds.py {toggle|nc|ambient|off|status} [--mac AA:BB:CC:DD:EE:FF] [-v]
-    linkbuds.py            (no arguments: print help)
+    sony-cli.py {toggle|nc|ambient|off|status} [--mac AA:BB:CC:DD:EE:FF] [-v]
+    sony-cli.py            (no arguments: print help)
 
 Requires: Python 3, PyGObject (python3-gi), BlueZ, buds paired + connected.
 The BudsLink app must not be running (it holds the same RFCOMM service).
@@ -29,7 +30,7 @@ except ImportError:
 
 SONY_UUID_V2 = "956c7b26-d49a-4ba8-b03f-b17d393cb6e2"
 NAME_PATTERN = "LinkBuds S"
-PROFILE_PATH = "/io/github/linkbudscli/profile"
+PROFILE_PATH = "/io/github/sonycli/profile"
 
 HEADER, TRAILER, ESCAPE, ESCAPE_MASK = 0x3E, 0x3C, 0x3D, 0xEF
 
@@ -159,7 +160,7 @@ def open_rfcomm(bus, device_path, timeout=15):
 
     try:
         opts = {
-            "Name": GLib.Variant("s", "linkbuds-cli"),
+            "Name": GLib.Variant("s", "sony-cli"),
             "Role": GLib.Variant("s", "client"),
             "AutoConnect": GLib.Variant("b", False),
         }
