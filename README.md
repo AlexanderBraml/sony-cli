@@ -19,7 +19,7 @@ Ambient Sound mode from the command line. The protocol was taken from
 ./linkbuds.py nc         # Noise Cancelling
 ./linkbuds.py ambient    # Ambient Sound
 ./linkbuds.py off        # both off
-./linkbuds.py status     # print current mode
+./linkbuds.py status     # battery, codec, NC/ambient mode, EQ and other settings
 ./linkbuds.py --mac AA:BB:CC:DD:EE:FF toggle   # pick a specific device
 ./linkbuds.py -v status  # dump raw frames to stderr for debugging
 ```

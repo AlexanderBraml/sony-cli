@@ -131,9 +131,9 @@ def find_device(bus, mac):
     if not connected:
         raise SonyError(f"'{candidates[0][1]}' is paired but not connected")
 
-    path, name, _ = connected[0]
+    path, name, dev = connected[0]
     log(f"using device {name} ({path})")
-    return path
+    return path, name, dev.get("Address", "?")
 
 
 def open_rfcomm(bus, device_path, timeout=15):
@@ -319,6 +319,18 @@ class SonyLink:
                     return fpayload
         raise SonyError(f"no reply to request {hexs(payload)}")
 
+    def query(self, payload, msg_type=MT_COMMAND_1, timeout=1.5, retries=1):
+        """GET that tolerates no answer: reply must be RET (req+1) or NTFY
+        (req+3) with the same sub-type byte. Returns payload or None."""
+        want = (payload[0] + 1, payload[0] + 3)
+        try:
+            return self.request(payload, lambda p: len(p) > 1 and p[0] in want
+                                and p[1] == payload[1],
+                                msg_type=msg_type, timeout=timeout, retries=retries)
+        except SonyError:
+            log(f"  no answer to {hexs(payload)}, skipping")
+            return None
+
     def send_and_wait_ack(self, payload, timeout=2.0):
         self.send(MT_COMMAND_1, payload)
         deadline = time.monotonic() + timeout
@@ -347,7 +359,7 @@ def get_asm_type(link):
     for func, asm in ASM_FROM_FUNCTION:
         if func in funcs:
             log(f"asm type: 0x{asm:02x}")
-            return asm
+            return asm, funcs
     raise SonyError("device reports no noise-cancelling / ambient-sound support")
 
 
@@ -411,13 +423,160 @@ def set_state(link, asm, mode, st):
         log("  no ACK for SET (checking state anyway)")
 
 
+# --- Extended status (read-only GETs from sonySocketV2.js) --------------------
+
+CODECS = {0x00: "Unsettled", 0x01: "SBC", 0x02: "AAC", 0x10: "LDAC", 0x20: "aptX",
+          0x21: "aptX HD", 0x30: "LC3", 0xFF: "Other"}
+DSEE_TYPES = {0x00: "DSEE HX", 0x01: "DSEE", 0x02: "DSEE HX AI", 0x03: "DSEE Ultimate"}
+EQ_PRESETS = {0x00: "Off", 0x10: "Bright", 0x11: "Excited", 0x12: "Mellow", 0x13: "Relaxed",
+              0x14: "Vocal", 0x15: "Treble Boost", 0x16: "Bass Boost", 0x17: "Speech",
+              0xA0: "Manual", 0xA1: "Custom 1", 0xA2: "Custom 2"}
+EQ6_LABELS = ["Bass", "400", "1k", "2.5k", "6.3k", "16k"]
+EQ10_LABELS = ["31", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]
+BUTTON_MODES = {0x00: "Ambient Sound Control", 0x10: "Volume Control",
+                0x20: "Playback Control", 0x22: "Playback Control",
+                0x35: "Ambient Sound Control (Quick Access)", 0xFF: "Not assigned"}
+AMB_BUTTON = {0x01: "NC -> Ambient -> Off", 0x02: "NC <-> Ambient",
+              0x03: "NC <-> Off", 0x04: "Ambient <-> Off"}
+S2C_SENS = {0x00: "Auto", 0x01: "High", 0x02: "Low"}
+S2C_TIMEOUT = {0x00: "Short", 0x01: "Standard", 0x02: "Long", 0x03: "Off"}
+AUTO_ASM_SENS = {0x00: "Standard", 0x01: "High", 0x02: "Low"}
+POWER_OFF_TIME = {0x00: "5 min", 0x01: "30 min", 0x02: "1 h", 0x03: "3 h"}
+
+# FunctionTypeV2T1 -> EqInquiryType, BudsLink priority order
+EQ_TYPE_FROM_FUNCTION = [(0x50, 0x00), (0x51, 0x01), (0x52, 0x02), (0x57, 0x04), (0x55, 0x31)]
+
+
+def onoff(v):
+    return "on" if v else "off"
+
+
+def bool_byte(b):
+    """booleanFromByte: 0 -> False, 1 -> True, else None."""
+    return {0x00: False, 0x01: True}.get(b)
+
+
+def battery_text(level, status):
+    level = max(0, min(level, 100))
+    return f"{level}%" + (" (charging)" if status in (0x01, 0x03) else "")
+
+
+def get_battery(link, funcs):
+    parts = []
+    single = (0x08 if 0x28 in funcs else 0x00 if 0x20 in funcs else None)
+    dual = (0x09 if 0x29 in funcs else 0x01 if 0x21 in funcs else None)
+    case = (0x0A if 0x2A in funcs else 0x02 if 0x22 in funcs else None)
+
+    if single is not None:
+        p = link.query([0x22, single])
+        if p and len(p) >= 4:
+            parts.append(battery_text(p[2], p[3]))
+    if dual is not None:
+        p = link.query([0x22, dual])
+        if p and len(p) >= 6:
+            parts.append("L " + (battery_text(p[2], p[3]) if p[2] > 0 else "-"))
+            parts.append("R " + (battery_text(p[4], p[5]) if p[4] > 0 else "-"))
+    if case is not None:
+        p = link.query([0x22, case])
+        if p and len(p) >= 4:
+            parts.append("Case " + (battery_text(p[2], p[3]) if p[2] > 0 else "-"))
+    return "  ".join(parts) or None
+
+
+def collect_status(link, asm, funcs, st):
+    """Return list of (label, value) lines; entries without an answer are skipped."""
+    out = []
+
+    p = link.query([0x04, 0x02])  # CONNECT_GET_DEVICE_INFO, FW_VERSION
+    if p and len(p) >= 3 and len(p) >= 3 + p[2]:
+        out.append(("Firmware", bytes(p[3:3 + p[2]]).decode(errors="replace")))
+
+    batt = get_battery(link, funcs)
+    if batt:
+        out.append(("Battery", batt))
+
+    if 0x12 in funcs:  # CODEC_INDICATOR
+        p = link.query([0x12, 0x02])
+        if p and len(p) >= 3 and p[2] in CODECS:
+            out.append(("Codec", CODECS[p[2]]))
+    if 0x13 in funcs:  # UPSCALING_INDICATOR
+        p = link.query([0x12, 0x03])
+        if p and len(p) >= 4 and p[2] in DSEE_TYPES:
+            out.append(("Upscaling", f"{DSEE_TYPES[p[2]]} "
+                        f"{'active' if p[3] != 0x00 else 'inactive'}"))
+
+    out.append(("Noise control", MODE_LABEL[st["mode"]]))
+    if asm not in (ASM_ON_OFF,):
+        out.append(("  Ambient level", f"{st['level']}/20"))
+    out.append(("  Focus on voice", onoff(st["focus_voice"])))
+    if asm == ASM_NC_DUAL_NA:
+        out.append(("  Auto ambient", f"{onoff(st['auto_ambient'])} "
+                    f"(sensitivity {AUTO_ASM_SENS.get(st['sensitivity'], '?')})"))
+    p = link.query([NCASM_GET_PARAM, ASM_BUTTON])
+    if p and len(p) >= 3 and p[2] in AMB_BUTTON:
+        out.append(("  Button cycles", AMB_BUTTON[p[2]]))
+
+    eq_type = next((t for f, t in EQ_TYPE_FROM_FUNCTION if f in funcs), 0x01)
+    p = link.query([0x56, eq_type])  # EQEBB_GET_PARAM
+    if p and len(p) >= 3 and p[2] in EQ_PRESETS:
+        text = EQ_PRESETS[p[2]]
+        if len(p) >= 10 and p[3] == 0x06:
+            bands = [f"{lbl} {p[4 + i] - 10:+d}" for i, lbl in enumerate(EQ6_LABELS)]
+            text += "  [" + ", ".join(bands) + "]"
+        elif len(p) >= 14 and p[3] == 0x0A:
+            bands = [f"{lbl} {p[4 + i] - 6:+d}" for i, lbl in enumerate(EQ10_LABELS)]
+            text += "  [" + ", ".join(bands) + "]"
+        out.append(("Equalizer", text))
+
+    p = link.query([0xE6, 0x01])  # AUDIO_GET_PARAM: upsampling (DSEE) setting
+    if p and len(p) >= 3 and bool_byte(p[2]) is not None:
+        out.append(("DSEE", onoff(bool_byte(p[2]))))
+
+    p = link.query([0xF6, 0x03])  # SYSTEM_GET_PARAM: touch button assignment
+    if p and len(p) >= 5 and p[2] == 0x02 and p[3] in BUTTON_MODES and p[4] in BUTTON_MODES:
+        out.append(("Touch L / R", f"{BUTTON_MODES[p[3]]} / {BUTTON_MODES[p[4]]}"))
+
+    p = link.query([0xF6, 0x0C])  # SYSTEM_GET_PARAM: speak-to-chat (byte = disabled)
+    if p and len(p) >= 3 and bool_byte(p[2]) is not None:
+        text = onoff(not bool_byte(p[2]))
+        c = link.query([0xFA, 0x0C])  # SYSTEM_GET_EXT_PARAM: speak-to-chat config
+        if c and len(c) >= 4 and c[2] in S2C_SENS and c[3] in S2C_TIMEOUT:
+            text += f" (sensitivity {S2C_SENS[c[2]]}, timeout {S2C_TIMEOUT[c[3]]})"
+        out.append(("Speak-to-Chat", text))
+
+    p = link.query([0xF6, 0x01])  # SYSTEM_GET_PARAM: pause when taken off (byte = disabled)
+    if p and len(p) >= 3 and bool_byte(p[2]) is not None:
+        out.append(("Pause when removed", onoff(not bool_byte(p[2]))))
+
+    p = link.query([0x26, 0x05])  # POWER_GET_PARAM: automatic power off
+    if p and len(p) >= 4 and p[2] in (0x10, 0x11):
+        text = onoff(p[2] == 0x10)
+        if p[2] == 0x10 and p[3] in POWER_OFF_TIME and p[3] != 0x00:
+            text += f" (after {POWER_OFF_TIME[p[3]]})"
+        out.append(("Auto power off", text))
+
+    p = link.query([0x46, 0x03], msg_type=MT_COMMAND_2)  # voice guidance (byte = disabled)
+    if p and len(p) >= 3 and bool_byte(p[2]) is not None:
+        out.append(("Voice guidance", onoff(not bool_byte(p[2]))))
+
+    return out
+
+
+def print_status(name, address, lines):
+    lines = [("Device", f"{name} ({address})")] + lines
+    width = max(len(label) for label, _ in lines) + 2
+    for label, value in lines:
+        print(f"{label + ':':<{width}}{value}")
+
+
 def main():
     global VERBOSE
     ap = argparse.ArgumentParser(description="Toggle Sony LinkBuds S noise cancelling / ambient sound.")
     ap.add_argument("action", nargs="?",
                     choices=["toggle", "nc", "ambient", "off", "status"],
                     help="toggle: Noise Cancelling <-> Ambient Sound (Off -> NC); "
-                         "nc / ambient / off: set that mode; status: print current mode")
+                         "nc / ambient / off: set that mode; status: show battery, "
+                         "mode and settings")
     ap.add_argument("--mac", help="Bluetooth address of the buds (default: auto-detect)")
     ap.add_argument("-v", "--verbose", action="store_true", help="dump frames to stderr")
     args = ap.parse_args()
@@ -427,16 +586,16 @@ def main():
     VERBOSE = args.verbose
 
     bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
-    device_path = find_device(bus, args.mac)
+    device_path, name, address = find_device(bus, args.mac)
     fd, unregister = open_rfcomm(bus, device_path)
 
     try:
         link = SonyLink(fd)
-        asm = get_asm_type(link)
+        asm, funcs = get_asm_type(link)
         st = get_state(link, asm)
 
         if args.action == "status":
-            print(MODE_LABEL[st["mode"]])
+            print_status(name, address, collect_status(link, asm, funcs, st))
             return
 
         if args.action == "toggle":
