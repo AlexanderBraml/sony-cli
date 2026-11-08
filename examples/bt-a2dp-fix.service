@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconnect A2DP when Bluetooth headphones connect with hands-free only
+After=pipewire.service wireplumber.service
+
+[Service]
+ExecStart=%h/.local/bin/bt-a2dp-fix watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

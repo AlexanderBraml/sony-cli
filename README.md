@@ -77,6 +77,40 @@ PLAYER=vlc examples/sony-toggle-pause.sh pause   # control another player (defau
 It uses `sony-cli` from your `PATH` if installed, otherwise `sony-cli.py` from
 this repository. Handy as a keyboard shortcut for talking to someone.
 
+### Fix: connected as hands-free only (mSBC / CVSD)
+
+Sometimes the LinkBuds S connect with only the hands-free profile, so audio
+is mono mSBC. The bluetoothd log then shows
+
+```
+a2dp-sink profile connect failed for XX:XX:...: Device or resource busy
+```
+
+The earbuds open the A2DP link at the same moment BlueZ does. Both attempts
+collide, and BlueZ never retries. [`examples/bt-a2dp-fix.py`](examples/bt-a2dp-fix.py)
+notices a connected audio device without A2DP and connects just the A2DP
+profile again, which takes about a second and needs no disconnect. If that keeps
+failing, it falls back to a full disconnect and reconnect. It works for any
+Bluetooth headphones, not only Sony ones.
+
+Run it in the background as a systemd user service:
+
+```
+install -Dm755 examples/bt-a2dp-fix.py ~/.local/bin/bt-a2dp-fix
+install -Dm644 examples/bt-a2dp-fix.service ~/.config/systemd/user/bt-a2dp-fix.service
+systemctl --user enable --now bt-a2dp-fix.service
+journalctl --user -u bt-a2dp-fix -f      # see what it does
+```
+
+Or run it by hand (e.g. from a keyboard shortcut):
+
+```
+bt-a2dp-fix fix         # connect A2DP if missing
+bt-a2dp-fix reconnect   # full disconnect + connect
+```
+
+`--mac AA:BB:CC:DD:EE:FF` limits it to one device.
+
 ## License
 
 GPL-3.0-or-later (see `LICENSE`), as the protocol implementation is derived
